@@ -1,0 +1,17 @@
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor and IDE directories
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Java compiled class files (if any are compiled locally)
+*.class
+
+# Node / temporary files
+node_modules/
+npm-debug.log*
