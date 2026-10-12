@@ -50,21 +50,23 @@ python --version
    cd java-tutor
    ```
 
-2. Start a local HTTP server on port 8000 (or any available port, such as 8080):
+2. Start a local HTTP server on port 8001:
 
    **Windows (PowerShell or Command Prompt):**
    ```powershell
-   python -m http.server 8000
+   python -m http.server 8001
    ```
 
    **macOS / Linux:**
    ```bash
-   python3 -m http.server 8000
+   python3 -m http.server 8001
    ```
+
+   > **Note**: Use a different port than the Python tutor (which uses 8000). Both tutors use the same file names, so if they share a port the browser can load the cached Python tutor instead of this one. If that happens, press `Ctrl + F5` to force a full reload.
 
 3. Open your browser and visit:
 
-   [http://localhost:8000](http://localhost:8000)
+   [http://localhost:8001](http://localhost:8001)
 
 4. Press `Ctrl + C` in the terminal when you want to stop the server.
 

@@ -7,6 +7,7 @@ const isBrowser = typeof document !== "undefined";
 const notesText = isBrowser ? document.querySelector("#notesText") : null;
 const syntaxCode = isBrowser ? document.querySelector("#syntaxHighlight code") : null;
 const traceCode = isBrowser ? document.querySelector("#traceCode") : null;
+const editorLineNumbers = isBrowser ? document.querySelector("#editorLineNumbers") : null;
 const scratchEditor = isBrowser ? document.querySelector(".scratch-editor") : null;
 const editorTabsContainer = isBrowser ? document.querySelector("#editorTabs") : null;
 const addTabButton = isBrowser ? document.querySelector("#addTabButton") : null;
@@ -29,6 +30,12 @@ const tutorFirst = isBrowser ? document.querySelector("#tutorFirstButton") : nul
 const tutorLast = isBrowser ? document.querySelector("#tutorLastButton") : null;
 const tutorFrames = isBrowser ? document.querySelector("#tutorFrames") : null;
 const tutorHeap = isBrowser ? document.querySelector("#tutorHeap") : null;
+const tutorMemoryLayout = isBrowser ? document.querySelector("#tutorMemoryLayout") : null;
+const tutorListView = isBrowser ? document.querySelector("#tutorListView") : null;
+const tutorListLegend = isBrowser ? document.querySelector("#tutorListLegend") : null;
+const tutorListCanvas = isBrowser ? document.querySelector("#tutorListCanvas") : null;
+const tutorMemoryViewButton = isBrowser ? document.querySelector("#tutorMemoryViewButton") : null;
+const tutorListViewButton = isBrowser ? document.querySelector("#tutorListViewButton") : null;
 
 const consoleHeading = isBrowser ? document.querySelector("#consoleHeading") : null;
 const scratchConsole = isBrowser ? document.querySelector("#scratchConsole") : null;
@@ -80,12 +87,22 @@ function highlightJava(source) {
 
 function updateSyntaxHighlight() {
   syntaxCode.innerHTML = `${highlightJava(notesText.value)}\n`;
+  updateLineNumbers();
+}
+
+function updateLineNumbers() {
+  const lineCount = notesText.value.split("\n").length;
+  if (editorLineNumbers.childElementCount !== lineCount) {
+    editorLineNumbers.innerHTML = Array.from({ length: lineCount }, (_, i) => `<span>${i + 1}</span>`).join("");
+  }
+  editorLineNumbers.scrollTop = notesText.scrollTop;
 }
 
 function syncEditorScroll() {
   const highlight = document.querySelector("#syntaxHighlight");
   highlight.scrollTop = notesText.scrollTop;
   highlight.scrollLeft = notesText.scrollLeft;
+  editorLineNumbers.scrollTop = notesText.scrollTop;
 }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +602,7 @@ class JavaParser {
       if (!this.check("PUNCTUATION", ";")) {
         if (this.isTypeAhead()) {
           init = this.parseVariableDeclarationStatement(false);
+          this.consume("PUNCTUATION", ";", "Expected ';' after for init");
         } else {
           init = this.parseExpression();
           this.consume("PUNCTUATION", ";", "Expected ';' after for init");
@@ -2061,6 +2079,269 @@ function renderTutorHeap(heap, labels) {
   }).join("");
 }
 
+// ---------------------------------------------------------------------------
+// Linked List View
+// ---------------------------------------------------------------------------
+
+const LIST_VALUE_KEYS = ["val", "value", "data", "key", "item", "name"];
+const LIST_POINTER_ATTR_PATTERN = /^(head|tail|first|last|front|rear|top)$/i;
+const POINTER_KIND_RANK = { active: 0, outer: 1, attr: 2 };
+
+function isListNode(id, heap) {
+  const object = heap?.[id];
+  return Boolean(object?.attrs && "next" in object.attrs);
+}
+
+function listNextId(id, heap) {
+  const next = heap[id].attrs.next;
+  return next?.kind === "ref" && isListNode(next.id, heap) ? next.id : null;
+}
+
+function listNodeValue(object) {
+  const preferred = LIST_VALUE_KEYS.map((key) => object.attrs[key]).find((value) => value?.kind === "primitive");
+  const fallback = Object.entries(object.attrs)
+    .filter(([name]) => name !== "next" && name !== "prev")
+    .map(([, value]) => value)
+    .find((value) => value?.kind === "primitive" && value.type !== "null");
+  const encoded = preferred || fallback;
+  if (!encoded) return object.type;
+  let text = encoded.value;
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) text = text.slice(1, -1);
+  return text.length > 8 ? `${text.slice(0, 7)}…` : text;
+}
+
+// The interpreter never frees objects, so anything not reachable from a frame counts as garbage collected.
+function findReachableIds(frames, heap) {
+  const reachable = new Set();
+  const pending = [];
+  (frames || []).forEach((frame) => {
+    Object.values(frame.locals || {}).forEach((value) => value?.kind === "ref" && pending.push(value.id));
+  });
+  while (pending.length) {
+    const id = pending.pop();
+    if (reachable.has(id) || !heap?.[id]) continue;
+    reachable.add(id);
+    childLabels(heap[id], "").forEach(([, value]) => value?.kind === "ref" && pending.push(value.id));
+  }
+  return reachable;
+}
+
+function frameNameForObject(id, frames, heap, labels) {
+  for (let index = frames.length - 1; index >= 0; index--) {
+    const match = Object.entries(frames[index].locals || {}).find(([, value]) => value?.kind === "ref" && value.id === id);
+    if (match) return match[0];
+  }
+  return labelForRef(id, heap, labels);
+}
+
+function collectListPointers(frames, heap, labels, reachable) {
+  const pointers = new Map();
+  const add = (id, name, kind) => {
+    if (!pointers.has(id)) pointers.set(id, []);
+    const list = pointers.get(id);
+    if (!list.some((pointer) => pointer.name === name)) list.push({ name, kind });
+  };
+
+  (frames || []).forEach((frame, index) => {
+    const kind = index === frames.length - 1 ? "active" : "outer";
+    Object.entries(frame.locals || {}).forEach(([name, value]) => {
+      if (value?.kind === "ref" && isListNode(value.id, heap)) add(value.id, name, kind);
+    });
+  });
+
+  reachable.forEach((id) => {
+    const object = heap[id];
+    if (isListNode(id, heap)) return;
+    const owner = frameNameForObject(id, frames, heap, labels);
+    childLabels(object, owner).forEach(([label, value]) => {
+      if (value?.kind === "ref" && isListNode(value.id, heap)) add(value.id, label, "attr");
+    });
+  });
+
+  pointers.forEach((list) => list.sort((a, b) => POINTER_KIND_RANK[a.kind] - POINTER_KIND_RANK[b.kind]));
+  return pointers;
+}
+
+function buildListChains(nodeIds, heap) {
+  const incoming = new Set();
+  nodeIds.forEach((id) => {
+    const next = listNextId(id, heap);
+    if (next) incoming.add(next);
+  });
+
+  const placed = new Set();
+  const chains = [];
+  const walk = (start) => {
+    const ids = [];
+    const inChain = new Set();
+    let tail = { kind: "null" };
+    let id = start;
+    while (id) {
+      if (inChain.has(id)) {
+        tail = { kind: "cycle", id };
+        break;
+      }
+      if (placed.has(id)) {
+        tail = { kind: "join", id };
+        break;
+      }
+      ids.push(id);
+      inChain.add(id);
+      placed.add(id);
+      id = listNextId(id, heap);
+    }
+    chains.push({ ids, tail });
+  };
+
+  nodeIds.filter((id) => !incoming.has(id)).forEach(walk);
+  nodeIds.forEach((id) => !placed.has(id) && walk(id));
+  return chains;
+}
+
+function buildLinkedListModel(frames, heap, labels) {
+  const reachable = findReachableIds(frames, heap);
+  const allNodeIds = Object.keys(heap || {}).filter((id) => isListNode(id, heap));
+  const nodeIds = allNodeIds.filter((id) => reachable.has(id));
+  const pointers = collectListPointers(frames, heap, labels, reachable);
+  const chains = buildListChains(nodeIds, heap);
+  const hasPointer = (chain) => chain.ids.some((id) => pointers.has(id));
+  chains.sort((a, b) => Number(hasPointer(b)) - Number(hasPointer(a)));
+  return { chains, pointers, garbageCount: allNodeIds.length - nodeIds.length, reachable };
+}
+
+function pointerState(list) {
+  if (!list?.length) return "";
+  return list[0].kind;
+}
+
+function renderListLegend(frames, heap, labels, model) {
+  const activeFrame = frames?.[frames.length - 1];
+  const nullChips = Object.entries(activeFrame?.locals || {})
+    .filter(([, value]) => value?.kind === "primitive" && value.type === "null")
+    .map(([name]) => `<span class="tree-chip none"><strong>${escapeHtml(name)}</strong> → null</span>`);
+
+  const ownerChips = [];
+  model.reachable.forEach((id) => {
+    const object = heap[id];
+    if (!object.attrs || isListNode(id, heap)) return;
+    const entries = Object.entries(object.attrs);
+    const pointsAtNodes = entries.some(([name, value]) =>
+      (value?.kind === "ref" && isListNode(value.id, heap)) ||
+      (LIST_POINTER_ATTR_PATTERN.test(name) && value?.type === "null"));
+    if (!pointsAtNodes) return;
+    const owner = frameNameForObject(id, frames, heap, labels);
+    const fields = entries.map(([name, value]) => {
+      const shown = value?.kind === "ref"
+        ? isListNode(value.id, heap) ? listNodeValue(heap[value.id]) : labelForRef(value.id, heap, labels)
+        : value?.value;
+      return `${escapeHtml(name)}: ${escapeHtml(shown ?? "?")}`;
+    }).join(", ");
+    ownerChips.push(`<span class="tree-chip owner"><strong>${escapeHtml(owner)}</strong> ${escapeHtml(object.type)} { ${fields} }</span>`);
+  });
+
+  const frameName = activeFrame ? escapeHtml(activeFrame.name) : "—";
+  const extraChips = [...ownerChips, ...nullChips];
+  tutorListLegend.innerHTML = `
+    <div class="tree-legend-row">
+      <span class="tree-key"><span class="tree-swatch active"></span>Variable in ${frameName}</span>
+      <span class="tree-key"><span class="tree-swatch outer"></span>Variable in an outer frame</span>
+      <span class="tree-key"><span class="tree-swatch attr"></span>Object field</span>
+    </div>
+    ${extraChips.length ? `<div class="tree-legend-row">${extraChips.join("")}</div>` : ""}
+  `;
+}
+
+function renderListSlot(id, heap, labels, pointers) {
+  const nodePointers = pointers.get(id) || [];
+  const state = pointerState(nodePointers);
+  const pills = nodePointers.map((pointer) =>
+    `<span class="list-pointer ${pointer.kind}">${escapeHtml(pointer.name)}</span>`
+  ).join("");
+  const object = heap[id];
+  const tooltip = `${labelForRef(id, heap, labels)} (${object.type})\n` +
+    Object.entries(object.attrs).map(([name, value]) =>
+      `${name} = ${value?.kind === "ref" ? labelForRef(value.id, heap, labels) : value?.value}`
+    ).join("\n");
+  return `
+    <div class="list-slot">
+      <div class="list-pointers">
+        ${pills}
+        ${nodePointers.length ? `<span class="list-pointer-arrow ${state}">↓</span>` : ""}
+      </div>
+      <div class="list-node ${state}" title="${escapeHtml(tooltip)}">
+        <span class="list-node-val">${escapeHtml(listNodeValue(object))}</span>
+        <span class="list-node-next">next</span>
+      </div>
+    </div>`;
+}
+
+function renderListLink(fromId, toId, heap) {
+  const prev = toId ? heap[toId]?.attrs?.prev : null;
+  const doubly = prev?.kind === "ref" && prev.id === fromId;
+  return `<span class="list-link${doubly ? " doubly" : ""}" title="${doubly ? "next / prev" : "next"}">${doubly ? "⇄" : "→"}</span>`;
+}
+
+function renderListTail(tail, heap) {
+  if (tail.kind === "null") {
+    return `<div class="list-slot"><div class="list-pointers"></div><div class="list-null">null</div></div>`;
+  }
+  const value = escapeHtml(listNodeValue(heap[tail.id]));
+  const text = tail.kind === "cycle" ? `↺ back to ${value}` : `↪ joins ${value}`;
+  return `<div class="list-slot"><div class="list-pointers"></div><div class="list-null list-ref">${text}</div></div>`;
+}
+
+function renderTutorList(frames, heap, labels) {
+  const model = buildLinkedListModel(frames, heap, labels);
+  renderListLegend(frames, heap, labels, model);
+
+  if (!model.chains.length) {
+    tutorListCanvas.innerHTML = `<p class="tutor-empty">No linked list nodes in memory at this step. A node is any class instance with a <code>next</code> field.</p>`;
+    return;
+  }
+
+  const rows = model.chains.map((chain) => {
+    const parts = [];
+    chain.ids.forEach((id, index) => {
+      parts.push(renderListSlot(id, heap, labels, model.pointers));
+      const nextId = chain.ids[index + 1] || (chain.tail.kind === "null" ? null : chain.tail.id);
+      parts.push(renderListLink(id, nextId, heap));
+    });
+    parts.push(renderListTail(chain.tail, heap));
+    const count = chain.ids.length;
+    return `
+      <div class="list-chain">
+        <div class="list-chain-meta">${count} node${count === 1 ? "" : "s"}</div>
+        <div class="list-track">${parts.join("")}</div>
+      </div>`;
+  }).join("");
+
+  const garbage = model.garbageCount
+    ? `<p class="list-garbage">${model.garbageCount} unreachable node${model.garbageCount === 1 ? "" : "s"} hidden (nothing points to ${model.garbageCount === 1 ? "it" : "them"}, so Java would garbage collect ${model.garbageCount === 1 ? "it" : "them"}).</p>`
+    : "";
+  tutorListCanvas.innerHTML = rows + garbage;
+
+  const focus = tutorListCanvas.querySelector(".list-node.active");
+  if (focus) focus.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function applyTutorView(tab) {
+  const showList = tab?.tutorView === "list";
+  tutorListView.hidden = !showList;
+  tutorMemoryLayout.hidden = showList;
+  tutorMemoryViewButton.classList.toggle("active", !showList);
+  tutorListViewButton.classList.toggle("active", showList);
+  tutorMemoryViewButton.setAttribute("aria-selected", String(!showList));
+  tutorListViewButton.setAttribute("aria-selected", String(showList));
+}
+
+function setTutorView(view) {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.tutorView = view;
+  applyTutorView(tab);
+  if (tab.tutorActive) showTutorStep(tab.tutorStepIndex);
+}
+
 function renderTraceCode(code, activeLine) {
   const lines = (code || "").split("\n");
   traceCode.innerHTML = lines.map((line, index) => {
@@ -2095,7 +2376,8 @@ function createTab(initialCode = null) {
     tutorActive: false,
     tutorSteps: [],
     tutorStepIndex: 0,
-    tutorStatus: ""
+    tutorStatus: "",
+    tutorView: "memory"
   };
   tabs.push(newTab);
   switchTab(newTab.id);
@@ -2165,6 +2447,7 @@ function renderTabsUI() {
 
 function syncTabToUI(tab) {
   consoleHeading.textContent = `Console — ${tab.title}`;
+  applyTutorView(tab);
 
   if (tab.tutorActive) {
     scratchEditor.classList.add("tracing");
@@ -2264,8 +2547,12 @@ function showTutorStep(index) {
 
   renderTraceCode(tab.code, isFinished ? null : step.line);
   const { labels, names } = buildHeapLabels(step.frames, step.heap);
-  renderTutorFrames(step.frames, step.heap, labels, names);
-  renderTutorHeap(step.heap, labels);
+  if (tab.tutorView === "list") {
+    renderTutorList(step.frames, step.heap, labels);
+  } else {
+    renderTutorFrames(step.frames, step.heap, labels, names);
+    renderTutorHeap(step.heap, labels);
+  }
 
   const stepOutput = step.stdout?.trim()
     ? step.stdout.replace(/\n$/, "")
@@ -2433,6 +2720,8 @@ if (isBrowser) {
   runButton.addEventListener("click", runScratchCode);
   visualizeButton.addEventListener("click", visualizeScratchCode);
   exitTutorButton.addEventListener("click", () => exitTutorMode(true));
+  tutorMemoryViewButton.addEventListener("click", () => setTutorView("memory"));
+  tutorListViewButton.addEventListener("click", () => setTutorView("list"));
 
   tutorPrev.addEventListener("click", () => {
     const tab = getActiveTab();
