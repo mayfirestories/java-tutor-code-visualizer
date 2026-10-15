@@ -238,6 +238,12 @@ pre { min-height: 70px; margin: 0; padding: 12px; border: 1px solid #333748; bor
 
 .concept-console { margin-top: 20px; }
 .concept-console h2 { margin-bottom: 0; }
+.stdin-box { margin-bottom: 14px; }
+.stdin-box label { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin-bottom: 6px; color: #9ba0b1; font-size: .72rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.stdin-box label span { color: #6f7488; font-weight: 600; letter-spacing: 0; text-transform: none; }
+#stdinText { width: 100%; min-height: 68px; max-height: 160px; margin: 0; padding: 10px 12px; border: 1px solid #333748; border-radius: 8px; background: #11131a; color: #d8dbea; resize: vertical; font: .82rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+#stdinText:focus { outline: 1px solid #6670df; }
+#stdinText::placeholder { color: #626779; }
 .primary-button { border-color: #7e87f4; background: #6670df; }
 
 @media (max-width: 800px) {

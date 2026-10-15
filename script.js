@@ -39,6 +39,7 @@ const tutorListViewButton = isBrowser ? document.querySelector("#tutorListViewBu
 
 const consoleHeading = isBrowser ? document.querySelector("#consoleHeading") : null;
 const scratchConsole = isBrowser ? document.querySelector("#scratchConsole") : null;
+const stdinText = isBrowser ? document.querySelector("#stdinText") : null;
 const clearScratchConsole = isBrowser ? document.querySelector("#clearScratchConsole") : null;
 
 const INITIAL_CODE_TAB_1 = `public class Main {
@@ -73,7 +74,7 @@ function escapeHtml(text) {
 function highlightJava(source) {
   const escaped = escapeHtml(source);
   // Match comments, strings, chars, keywords, builtins, and numbers
-  const pattern = /(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(public|private|protected|class|interface|extends|implements|static|final|abstract|void|int|double|float|boolean|char|byte|short|long|String|Integer|Double|Boolean|Character|List|ArrayList|Map|HashMap|Set|HashSet|Queue|Deque|ArrayDeque|LinkedList|Stack|StringBuilder|new|if|else|for|while|do|return|break|continue|this|null|true|false|instanceof|switch|case|default|try|catch|finally|throw|throws|import|package)\b|\b(System|out|println|print|printf|Math|Arrays|Collections)\b|(\b\d+(?:\.\d+)?[fFdDlL]?\b)/gm;
+  const pattern = /(\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(public|private|protected|class|interface|extends|implements|static|final|abstract|void|int|double|float|boolean|char|byte|short|long|String|Integer|Double|Boolean|Character|List|ArrayList|Map|HashMap|Set|HashSet|Queue|Deque|ArrayDeque|LinkedList|Stack|StringBuilder|new|if|else|for|while|do|return|break|continue|this|null|true|false|instanceof|switch|case|default|try|catch|finally|throw|throws|import|package|yield)\b|\b(System|out|println|print|printf|format|Math|Arrays|Collections|Scanner|Random)\b|(\b\d+(?:\.\d+)?[fFdDlL]?\b)/gm;
 
   return escaped.replace(pattern, (match, comment, string, keyword, builtin, number) => {
     if (comment) return `<span class="syntax-comment">${comment}</span>`;
@@ -114,7 +115,7 @@ const JAVA_KEYWORDS = new Set([
   "continue", "default", "do", "double", "else", "extends", "final", "finally",
   "float", "for", "if", "implements", "import", "instanceof", "int", "interface",
   "long", "new", "package", "private", "protected", "public", "return", "short",
-  "static", "super", "switch", "this", "throw", "throws", "try", "void", "while",
+  "static", "super", "switch", "this", "throw", "throws", "try", "void", "while", "yield",
   "true", "false", "null"
 ]);
 
@@ -271,7 +272,7 @@ function tokenizeJava(source) {
 
     // Multi-char operators
     const twoChars = source.slice(pos, pos + 2);
-    if (["==", "!=", "<=", ">=", "&&", "||", "++", "--", "+=", "-=", "*=", "/=", "%="].includes(twoChars)) {
+    if (["==", "!=", "<=", ">=", "&&", "||", "++", "--", "+=", "-=", "*=", "/=", "%=", "->"].includes(twoChars)) {
       tokens.push({ type: "OPERATOR", value: twoChars, line, col });
       pos += 2;
       col += 2;
@@ -499,6 +500,12 @@ class JavaParser {
       baseName = "void";
     }
 
+    while (this.check("PUNCTUATION", ".") && this.tokens[this.curr + 1]?.type === "IDENTIFIER") {
+      this.curr++;
+      baseName += `.${this.tokens[this.curr].value}`;
+      this.curr++;
+    }
+
     // Generic parameters e.g. <Integer> or <K, V>
     if (this.match("PUNCTUATION", "<")) {
       let depth = 1;
@@ -646,6 +653,20 @@ class JavaParser {
       return { type: "ContinueStatement", line };
     }
 
+    if (this.check("KEYWORD", "switch")) {
+      return this.parseSwitch();
+    }
+
+    if (this.match("KEYWORD", "yield")) {
+      const argument = this.check("PUNCTUATION", ";") ? null : this.parseExpression();
+      this.consume("PUNCTUATION", ";", "Expected ';' after yield");
+      return { type: "YieldStatement", argument, line };
+    }
+
+    if (this.match("PUNCTUATION", ";")) {
+      return { type: "EmptyStatement", line };
+    }
+
     // Variable declaration vs Expression statement
     if (this.isTypeAhead()) {
       return this.parseVariableDeclarationStatement(true);
@@ -654,6 +675,77 @@ class JavaParser {
     const expr = this.parseExpression();
     this.consume("PUNCTUATION", ";", "Expected ';' after statement");
     return { type: "ExpressionStatement", expression: expr, line };
+  }
+
+  parseSwitch() {
+    const line = this.peek().line;
+    this.consume("KEYWORD", "switch", "Expected 'switch'");
+    this.consume("PUNCTUATION", "(", "Expected '(' after 'switch'");
+    const discriminant = this.parseExpression();
+    this.consume("PUNCTUATION", ")", "Expected ')' after switch expression");
+    this.consume("PUNCTUATION", "{", "Expected '{' to start switch");
+
+    const cases = [];
+    let style = null;
+    while (!this.check("PUNCTUATION", "}") && !this.isAtEnd()) {
+      const caseLine = this.peek().line;
+      const labels = [];
+      let isDefault = false;
+
+      if (this.match("KEYWORD", "case")) {
+        labels.push(this.parseExpression());
+        while (this.match("PUNCTUATION", ",")) {
+          labels.push(this.parseExpression());
+        }
+      } else if (this.match("KEYWORD", "default")) {
+        isDefault = true;
+      } else {
+        const tok = this.peek();
+        throw new Error(`Parse error at line ${tok.line}: Expected 'case' or 'default', got '${tok.value}'`);
+      }
+
+      let arrow = false;
+      let body;
+      if (this.match("OPERATOR", "->")) {
+        if (style === "colon") {
+          throw new Error(`Parse error at line ${caseLine}: Cannot mix ':' and '->' in one switch`);
+        }
+        style = "arrow";
+        arrow = true;
+        if (this.check("PUNCTUATION", "{")) {
+          body = { kind: "block", statements: this.parseBlock() };
+        } else if (this.isSwitchStatementArm()) {
+          body = { kind: "statement", statement: this.parseStatement() };
+        } else {
+          const expression = this.parseExpression();
+          this.consume("PUNCTUATION", ";", "Expected ';' after switch arm");
+          body = { kind: "expression", expression };
+        }
+      } else {
+        if (style === "arrow") {
+          throw new Error(`Parse error at line ${caseLine}: Cannot mix ':' and '->' in one switch`);
+        }
+        style = "colon";
+        this.consume("PUNCTUATION", ":", "Expected ':' or '->' after case label");
+        const statements = [];
+        while (!this.check("KEYWORD", "case") && !this.check("KEYWORD", "default") && !this.check("PUNCTUATION", "}") && !this.isAtEnd()) {
+          statements.push(this.parseStatement());
+        }
+        body = { kind: "block", statements };
+      }
+
+      cases.push({ line: caseLine, labels, isDefault, arrow, body });
+    }
+
+    this.consume("PUNCTUATION", "}", "Expected '}' to end switch");
+    return { type: "SwitchStatement", discriminant, cases, line };
+  }
+
+  isSwitchStatementArm() {
+    if (this.check("PUNCTUATION", "{")) return true;
+    if (this.isTypeAhead()) return true;
+    if (!this.check("KEYWORD")) return false;
+    return ["if", "while", "do", "for", "return", "break", "continue", "switch", "throw", "try", "yield"].includes(this.peek().value);
   }
 
   isEnhancedFor() {
@@ -683,6 +775,9 @@ class JavaParser {
     }
     if (tok.type === "IDENTIFIER") {
       let look = this.curr + 1;
+      while (this.tokens[look]?.value === "." && this.tokens[look + 1]?.type === "IDENTIFIER") {
+        look += 2;
+      }
       // Skip generics: e.g. List<Map<String, Integer>>
       if (this.tokens[look]?.value === "<") {
         let depth = 0;
@@ -931,6 +1026,7 @@ class JavaParser {
     if (this.match("CHAR")) return { type: "Literal", value: this.previous().value, line };
 
     if (this.match("KEYWORD", "this")) return { type: "ThisExpression", line };
+    if (this.check("KEYWORD", "switch")) return this.parseSwitch();
     if (this.match("IDENTIFIER")) return { type: "Identifier", name: this.previous().value, line };
 
     // new ...
@@ -1001,10 +1097,28 @@ class ReturnSignal {
     this.value = value;
   }
 }
+class YieldSignal {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+const JAVA_RANDOM_MULTIPLIER = 0x5DEECE66Dn;
+const JAVA_RANDOM_ADDEND = 0xBn;
+const JAVA_RANDOM_MASK = (1n << 48n) - 1n;
+const BUILTIN_CLASSES = [
+  "System", "Math", "Arrays", "Collections", "Integer", "Long", "Double",
+  "Boolean", "Character", "String", "Random", "Scanner"
+];
+
+function javaRandomScramble(seed) {
+  return (BigInt(Math.trunc(Number(seed))) ^ JAVA_RANDOM_MULTIPLIER) & JAVA_RANDOM_MASK;
+}
 
 class JavaInterpreter {
-  constructor(ast) {
+  constructor(ast, stdin = "") {
     this.ast = ast;
+    this.stdin = String(stdin ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     this.classes = new Map();
     for (const cls of ast.classes) {
       this.classes.set(cls.name, cls);
@@ -1089,6 +1203,12 @@ class JavaInterpreter {
           type: obj.type,
           attrs
         };
+      } else if (typeof obj.text === "string") {
+        heapCopy[id] = {
+          id,
+          type: obj.type,
+          attrs: { text: this.encodeValue(obj.text, 1) }
+        };
       }
     }
 
@@ -1148,7 +1268,11 @@ class JavaInterpreter {
         this.captureSnapshot(null, false, "finished", null);
       } else {
         const errLine = this.callStack.length ? this.callStack[this.callStack.length - 1].currentLine : null;
-        this.captureSnapshot(errLine || 1, false, "exception", err.message);
+        let message = err?.message;
+        if (err instanceof BreakSignal) message = "break outside of a loop or switch";
+        else if (err instanceof ContinueSignal) message = "continue outside of a loop";
+        else if (err instanceof YieldSignal) message = "yield is only valid inside a switch";
+        this.captureSnapshot(errLine || 1, false, "exception", message || String(err));
       }
     }
 
@@ -1378,9 +1502,89 @@ class JavaInterpreter {
         throw new ContinueSignal();
       }
 
+      case "YieldStatement": {
+        this.recordStep(stmt.line, false);
+        throw new YieldSignal(stmt.argument ? this.evaluateExpression(stmt.argument) : null);
+      }
+
+      case "EmptyStatement":
+        break;
+
+      case "SwitchStatement":
+        this.executeSwitch(stmt, true);
+        break;
+
       default:
         break;
     }
+  }
+
+  executeSwitch(stmt, recordHeader) {
+    if (recordHeader) this.recordStep(stmt.line, false);
+    const disc = this.evaluateExpression(stmt.discriminant);
+    if (disc === null || disc === undefined) {
+      throw new Error("NullPointerException");
+    }
+
+    let matched = -1;
+    let defaultIndex = -1;
+    for (let i = 0; i < stmt.cases.length; i++) {
+      const arm = stmt.cases[i];
+      if (arm.isDefault) defaultIndex = i;
+      for (const labelExpr of arm.labels) {
+        if (this.valuesEqualForSwitch(disc, this.evaluateExpression(labelExpr))) {
+          matched = i;
+          break;
+        }
+      }
+      if (matched !== -1) break;
+    }
+
+    const start = matched !== -1 ? matched : defaultIndex;
+    if (start === -1) return null;
+
+    try {
+      if (stmt.cases[start].arrow) {
+        return this.executeSwitchArm(stmt.cases[start]);
+      }
+      for (let i = start; i < stmt.cases.length; i++) {
+        this.executeSwitchArm(stmt.cases[i]);
+      }
+      return null;
+    } catch (sig) {
+      if (sig instanceof BreakSignal) return null;
+      if (sig instanceof YieldSignal) return sig.value;
+      throw sig;
+    }
+  }
+
+  executeSwitchArm(arm) {
+    const bodyLine = arm.body.kind === "expression"
+      ? arm.body.expression?.line
+      : arm.body.kind === "statement"
+        ? arm.body.statement?.line
+        : arm.body.statements[0]?.line;
+    if (arm.line && arm.line !== bodyLine) this.recordStep(arm.line, false);
+
+    if (arm.body.kind === "expression") return this.evaluateExpression(arm.body.expression);
+    if (arm.body.kind === "statement") {
+      this.executeStatement(arm.body.statement);
+      return null;
+    }
+    for (const statement of arm.body.statements) this.executeStatement(statement);
+    return null;
+  }
+
+  valuesEqualForSwitch(disc, label) {
+    if (typeof disc === "number" && typeof label === "string" && label.length === 1) {
+      return disc === label.charCodeAt(0);
+    }
+    if (typeof label === "number" && typeof disc === "string" && disc.length === 1) {
+      return label === disc.charCodeAt(0);
+    }
+    if (typeof disc === "number" && typeof label === "number") return disc === label;
+    if (typeof disc === "string" && typeof label === "string") return disc === label;
+    return disc === label;
   }
 
   evaluateExpression(expr) {
@@ -1390,9 +1594,12 @@ class JavaInterpreter {
       case "Literal":
         return expr.value;
 
+      case "SwitchStatement":
+        return this.executeSwitch(expr, false);
+
       case "Identifier": {
         // Builtin packages/classes
-        if (["System", "Math", "Arrays", "Collections", "Integer", "String"].includes(expr.name)) {
+        if (BUILTIN_CLASSES.includes(expr.name)) {
           return { __builtinClass: expr.name };
         }
         const val = this.getVariable(expr.name);
@@ -1442,7 +1649,7 @@ class JavaInterpreter {
       }
 
       case "NewObjectExpression": {
-        const className = expr.className;
+        const className = this.unqualifiedName(expr.className);
         const args = expr.arguments.map((arg) => this.evaluateExpression(arg));
 
         // Built-in collection types
@@ -1460,6 +1667,15 @@ class JavaInterpreter {
         }
         if (className === "StringBuilder") {
           return this.createStringBuilder(args[0] || "");
+        }
+        if (className === "String") {
+          return this.newJavaString(args);
+        }
+        if (className === "Random") {
+          return args.length === 0 ? this.createRandom(0, false) : this.createRandom(args[0], true);
+        }
+        if (className === "Scanner") {
+          return this.createScanner(this.scannerSource(args[0]));
         }
 
         // Custom classes
@@ -1570,10 +1786,15 @@ class JavaInterpreter {
       }
 
       case "MemberExpression": {
+        const resolved = this.resolveStaticChain(expr);
+        if (resolved) return resolved;
         const objVal = this.evaluateExpression(expr.object);
         if (objVal && objVal.__builtinClass) {
           if (objVal.__builtinClass === "System" && expr.property === "out") {
             return { __systemOut: true };
+          }
+          if (objVal.__builtinClass === "System" && expr.property === "in") {
+            return { __systemIn: true };
           }
           if (objVal.__builtinClass === "Math") {
             return Math[expr.property] !== undefined ? Math[expr.property] : null;
@@ -1581,6 +1802,17 @@ class JavaInterpreter {
           if (objVal.__builtinClass === "Integer") {
             if (expr.property === "MAX_VALUE") return 2147483647;
             if (expr.property === "MIN_VALUE") return -2147483648;
+          }
+          if (objVal.__builtinClass === "Double") {
+            if (expr.property === "MAX_VALUE") return Number.MAX_VALUE;
+            if (expr.property === "MIN_VALUE") return Number.MIN_VALUE;
+            if (expr.property === "NaN") return NaN;
+            if (expr.property === "POSITIVE_INFINITY") return Infinity;
+            if (expr.property === "NEGATIVE_INFINITY") return -Infinity;
+          }
+          if (objVal.__builtinClass === "Boolean") {
+            if (expr.property === "TRUE") return true;
+            if (expr.property === "FALSE") return false;
           }
         }
 
@@ -1626,7 +1858,9 @@ class JavaInterpreter {
             const formatted = args.map((a) => this.stringifyValue(a)).join(" ");
             if (expr.method === "println") {
               this.stdout += formatted + "\n";
-            } else if (expr.method === "print" || expr.method === "printf") {
+            } else if (expr.method === "printf" || expr.method === "format") {
+              this.stdout += this.formatJavaString(this.stringifyValue(args[0] ?? ""), args.slice(1));
+            } else if (expr.method === "print") {
               this.stdout += formatted;
             }
             return null;
@@ -1662,41 +1896,29 @@ class JavaInterpreter {
             }
           }
 
-          // Builtin Integer methods
+          // Builtin Integer / Long / Double / Boolean / Character / String methods
           if (target && target.__builtinClass === "Integer") {
-            if (expr.method === "parseInt" || expr.method === "valueOf") {
-              return parseInt(args[0], 10);
-            }
-            if (expr.method === "toString") {
-              return String(args[0]);
-            }
+            return this.evalIntegerMethod(expr.method, args);
           }
-
-          // Builtin String methods
+          if (target && target.__builtinClass === "Long") {
+            return this.evalLongMethod(expr.method, args);
+          }
+          if (target && target.__builtinClass === "Double") {
+            return this.evalDoubleMethod(expr.method, args);
+          }
+          if (target && target.__builtinClass === "Boolean") {
+            return this.evalBooleanMethod(expr.method, args);
+          }
+          if (target && target.__builtinClass === "Character") {
+            return this.evalCharacterMethod(expr.method, args);
+          }
           if (target && target.__builtinClass === "String") {
-            if (expr.method === "valueOf") return String(args[0]);
+            return this.evalStringStaticMethod(expr.method, args);
           }
 
           // String instance methods
           if (typeof target === "string") {
-            if (expr.method === "length") return target.length;
-            if (expr.method === "charAt") return target.charAt(Number(args[0]));
-            if (expr.method === "substring") return target.substring(Number(args[0]), args[1] !== undefined ? Number(args[1]) : undefined);
-            if (expr.method === "equals") return target === String(args[0]);
-            if (expr.method === "equalsIgnoreCase") return target.toLowerCase() === String(args[0]).toLowerCase();
-            if (expr.method === "contains") return target.includes(String(args[0]));
-            if (expr.method === "startsWith") return target.startsWith(String(args[0]));
-            if (expr.method === "endsWith") return target.endsWith(String(args[0]));
-            if (expr.method === "indexOf") return target.indexOf(String(args[0]));
-            if (expr.method === "toLowerCase") return target.toLowerCase();
-            if (expr.method === "toUpperCase") return target.toUpperCase();
-            if (expr.method === "trim") return target.trim();
-            if (expr.method === "toCharArray") {
-              return this.createArray("char[]", target.split(""));
-            }
-            if (expr.method === "split") {
-              return this.createArray("String[]", target.split(args[0]));
-            }
+            return this.evalStringMethod(target, expr.method, args);
           }
 
           // Heap object methods (ArrayList, HashMap, HashSet, Deque, Custom classes)
@@ -1813,16 +2035,15 @@ class JavaInterpreter {
 
             // StringBuilder
             if (heapObj.type === "StringBuilder") {
-              if (expr.method === "append") {
-                heapObj.text += this.stringifyValue(args[0]);
-                return target;
-              }
-              if (expr.method === "toString") return heapObj.text;
-              if (expr.method === "length") return heapObj.text.length;
-              if (expr.method === "reverse") {
-                heapObj.text = heapObj.text.split("").reverse().join("");
-                return target;
-              }
+              return this.evalStringBuilderMethod(target, heapObj, expr.method, args);
+            }
+
+            if (heapObj.type === "Random") {
+              return this.evalRandomMethod(heapObj, expr.method, args);
+            }
+
+            if (heapObj.type === "Scanner") {
+              return this.evalScannerMethod(heapObj, expr.method, args);
             }
 
             // Custom instance method
@@ -1876,6 +2097,533 @@ class JavaInterpreter {
       default:
         return null;
     }
+  }
+
+  staticNameChain(expr) {
+    const parts = [];
+    let node = expr;
+    while (node && node.type === "MemberExpression") {
+      parts.push(node.property);
+      node = node.object;
+    }
+    if (!node || node.type !== "Identifier") return null;
+    parts.push(node.name);
+    return parts.reverse().join(".");
+  }
+
+  resolveStaticChain(expr) {
+    const chain = this.staticNameChain(expr);
+    if (!chain || !chain.includes(".")) return null;
+    const root = chain.slice(0, chain.indexOf("."));
+    if (this.getVariable(root) !== undefined) return null;
+    const simple = this.unqualifiedName(chain);
+    if (BUILTIN_CLASSES.includes(simple)) return { __builtinClass: simple };
+    if (this.classes.has(simple)) return { __classRef: simple };
+    return null;
+  }
+
+  unqualifiedName(name) {
+    const text = String(name ?? "");
+    const dot = text.lastIndexOf(".");
+    return dot === -1 ? text : text.slice(dot + 1);
+  }
+
+  newJavaString(args) {
+    if (args.length === 0) return "";
+    if (args[0] === null || args[0] === undefined) throw new Error("NullPointerException");
+    if (typeof args[0] === "string") return args[0];
+    if (args[0] && args[0].__ref && this.heap[args[0].__ref]?.elements) {
+      return this.heap[args[0].__ref].elements.map((ch) => String(ch ?? "")).join("");
+    }
+    if (args[0] && args[0].__ref && this.heap[args[0].__ref]?.text !== undefined) {
+      return String(this.heap[args[0].__ref].text);
+    }
+    return this.stringifyValue(args[0]);
+  }
+
+  scannerSource(arg) {
+    if (arg && arg.__systemIn) return this.stdin || "";
+    if (typeof arg === "string") return arg;
+    if (arg && arg.__ref && this.heap[arg.__ref]?.text !== undefined) return String(this.heap[arg.__ref].text);
+    throw new Error("Scanner source must be a String or System.in");
+  }
+
+  formatJavaString(format, args) {
+    const fmt = String(format ?? "");
+    let out = "";
+    let argi = 0;
+    let i = 0;
+    while (i < fmt.length) {
+      if (fmt[i] !== "%") {
+        out += fmt[i++];
+        continue;
+      }
+      if (i + 1 >= fmt.length) {
+        out += "%";
+        break;
+      }
+      i++;
+      if (fmt[i] === "%") { out += "%"; i++; continue; }
+      if (fmt[i] === "n") { out += "\n"; i++; continue; }
+      while (i < fmt.length && "-+ 0,#(".includes(fmt[i])) i++;
+      while (i < fmt.length && fmt[i] >= "0" && fmt[i] <= "9") i++;
+      let precision = null;
+      if (fmt[i] === ".") {
+        i++;
+        let digits = "";
+        while (i < fmt.length && fmt[i] >= "0" && fmt[i] <= "9") digits += fmt[i++];
+        precision = digits === "" ? 0 : Number(digits);
+      }
+      const conv = fmt[i++] || "";
+      const arg = args[argi++];
+      if (conv === "s") out += arg === null || arg === undefined ? "null" : this.stringifyValue(arg);
+      else if (conv === "d" || conv === "i") {
+        const n = Math.trunc(Number(arg));
+        out += Number.isNaN(n) ? "NaN" : String(n);
+      }
+      else if (conv === "f") {
+        const n = Number(arg);
+        out += Number.isNaN(n) ? "NaN" : n.toFixed(precision === null ? 6 : precision);
+      } else if (conv === "c") {
+        out += typeof arg === "number" ? String.fromCharCode(arg) : String(arg ?? "").slice(0, 1);
+      } else if (conv === "b") {
+        if (typeof arg === "boolean") out += arg ? "true" : "false";
+        else out += arg === null || arg === undefined ? "false" : "true";
+      } else out += `%${conv}`;
+    }
+    return out;
+  }
+
+  parseJavaInteger(raw, radix = 10) {
+    const text = String(raw ?? "").trim();
+    const base = Number(radix);
+    const body = text.replace(/^[-+]/, "");
+    const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz".slice(0, base);
+    const digitsOk = body.length > 0 && [...body.toLowerCase()].every((ch) => alphabet.includes(ch));
+    if (!(base >= 2 && base <= 36) || !digitsOk) {
+      throw new Error(`NumberFormatException: For input string: "${raw}"`);
+    }
+    const n = parseInt(text, base);
+    if (Number.isNaN(n)) throw new Error(`NumberFormatException: For input string: "${raw}"`);
+    return n;
+  }
+
+  evalIntegerMethod(name, args) {
+    if (name === "parseInt") return this.parseJavaInteger(args[0], args.length > 1 ? args[1] : 10);
+    if (name === "valueOf") {
+      if (typeof args[0] === "number") return Math.trunc(args[0]);
+      return this.parseJavaInteger(args[0], args.length > 1 ? args[1] : 10);
+    }
+    if (name === "toString") return String(args[0]);
+    throw new Error(`Cannot find method: Integer.${name}`);
+  }
+
+  evalLongMethod(name, args) {
+    if (name === "parseLong") return this.parseJavaInteger(args[0], args.length > 1 ? args[1] : 10);
+    if (name === "valueOf") {
+      if (typeof args[0] === "number") return Math.trunc(args[0]);
+      return this.parseJavaInteger(args[0], args.length > 1 ? args[1] : 10);
+    }
+    if (name === "toString") return String(args[0]);
+    throw new Error(`Cannot find method: Long.${name}`);
+  }
+
+  evalDoubleMethod(name, args) {
+    if (name === "parseDouble" || name === "valueOf") {
+      if (name === "valueOf" && typeof args[0] === "number") return Number(args[0]);
+      const text = String(args[0] ?? "").trim();
+      const n = Number(text);
+      if (Number.isNaN(n) && text !== "NaN") throw new Error(`NumberFormatException: For input string: "${args[0]}"`);
+      return n;
+    }
+    if (name === "isNaN") return Number.isNaN(Number(args[0]));
+    if (name === "isInfinite") {
+      const n = Number(args[0]);
+      return !Number.isFinite(n) && !Number.isNaN(n);
+    }
+    if (name === "toString") return String(args[0]);
+    throw new Error(`Cannot find method: Double.${name}`);
+  }
+
+  evalBooleanMethod(name, args) {
+    if (name === "parseBoolean" || name === "valueOf") {
+      if (typeof args[0] === "boolean") return args[0];
+      return String(args[0] ?? "").trim().toLowerCase() === "true";
+    }
+    if (name === "toString") return String(args[0]);
+    throw new Error(`Cannot find method: Boolean.${name}`);
+  }
+
+  javaChar(value) {
+    if (typeof value === "number") return String.fromCharCode(value);
+    if (typeof value === "string") return value.slice(0, 1);
+    if (value === null || value === undefined) return "";
+    return String(value).slice(0, 1);
+  }
+
+  evalCharacterMethod(name, args) {
+    const ch = this.javaChar(args[0]);
+    if (name === "isDigit") return /^\p{Nd}$/u.test(ch);
+    if (name === "isLetter") return /^\p{L}$/u.test(ch);
+    if (name === "isLetterOrDigit") return /^[\p{L}\p{Nd}]$/u.test(ch);
+    if (name === "isWhitespace" || name === "isSpaceChar") return ch.length > 0 && /\s/u.test(ch);
+    if (name === "isUpperCase") return ch.length > 0 && ch !== ch.toLowerCase() && ch === ch.toUpperCase();
+    if (name === "isLowerCase") return ch.length > 0 && ch !== ch.toUpperCase() && ch === ch.toLowerCase();
+    if (name === "toUpperCase") return ch.toUpperCase();
+    if (name === "toLowerCase") return ch.toLowerCase();
+    throw new Error(`Cannot find method: Character.${name}`);
+  }
+
+  evalStringStaticMethod(name, args) {
+    if (name === "valueOf") {
+      if (args[0] && args[0].__ref && this.heap[args[0].__ref]?.elements && /char/i.test(this.heap[args[0].__ref].type || "")) {
+        return this.heap[args[0].__ref].elements.join("");
+      }
+      return args[0] === null || args[0] === undefined ? "null" : this.stringifyValue(args[0]);
+    }
+    if (name === "format") return this.formatJavaString(args[0], args.slice(1));
+    if (name === "join") {
+      if (args[0] === null || args[0] === undefined) throw new Error("NullPointerException");
+      const delim = String(args[0]);
+      const parts = args.length === 2 && args[1] && args[1].__ref && this.heap[args[1].__ref]?.elements
+        ? this.heap[args[1].__ref].elements
+        : args.slice(1);
+      return parts.map((part) => part === null || part === undefined ? "null" : this.stringifyValue(part)).join(delim);
+    }
+    throw new Error(`Cannot find method: String.${name}`);
+  }
+
+  compareJavaStrings(left, right) {
+    const n = Math.min(left.length, right.length);
+    for (let i = 0; i < n; i++) {
+      const diff = left.charCodeAt(i) - right.charCodeAt(i);
+      if (diff !== 0) return diff;
+    }
+    return left.length - right.length;
+  }
+
+  javaSubstring(text, begin, end = text.length) {
+    const start = Number(begin);
+    const stop = Number(end);
+    if (!Number.isInteger(start) || !Number.isInteger(stop) || start < 0 || stop > text.length || start > stop) {
+      throw new Error(`StringIndexOutOfBoundsException: begin ${begin}, end ${end}, length ${text.length}`);
+    }
+    return text.slice(start, stop);
+  }
+
+  literalReplace(text, find, repl) {
+    if (find === "") return repl + text.split("").join(repl) + repl;
+    return text.split(find).join(repl);
+  }
+
+  evalStringMethod(text, name, args) {
+    const missing = () => { throw new Error(`Cannot find method: String.${name}`); };
+    switch (name) {
+      case "length": return text.length;
+      case "isEmpty": return text.length === 0;
+      case "isBlank": return text.trim().length === 0;
+      case "charAt": {
+        const i = Number(args[0]);
+        if (!Number.isInteger(i) || i < 0 || i >= text.length) {
+          throw new Error(`StringIndexOutOfBoundsException: String index out of range: ${args[0]}`);
+        }
+        return text.charAt(i);
+      }
+      case "substring":
+        return this.javaSubstring(text, args[0], args.length > 1 ? args[1] : text.length);
+      case "equals":
+        return typeof args[0] === "string" && text === args[0];
+      case "equalsIgnoreCase":
+        return typeof args[0] === "string" && text.toLowerCase() === args[0].toLowerCase();
+      case "contains":
+        if (typeof args[0] !== "string") throw new Error("NullPointerException");
+        return text.includes(args[0]);
+      case "startsWith":
+        if (typeof args[0] !== "string") throw new Error("NullPointerException");
+        return args.length > 1 ? text.startsWith(args[0], Number(args[1])) : text.startsWith(args[0]);
+      case "endsWith":
+        if (typeof args[0] !== "string") throw new Error("NullPointerException");
+        return text.endsWith(args[0]);
+      case "indexOf":
+      case "lastIndexOf": {
+        const from = args.length > 1 ? Number(args[1]) : (name === "lastIndexOf" ? text.length : 0);
+        const needle = typeof args[0] === "number" ? String.fromCharCode(args[0]) : String(args[0] ?? "");
+        return name === "indexOf" ? text.indexOf(needle, from) : text.lastIndexOf(needle, from);
+      }
+      case "toLowerCase": return text.toLowerCase();
+      case "toUpperCase": return text.toUpperCase();
+      case "trim": return text.trim();
+      case "strip": return text.trim();
+      case "stripLeading": return text.trimStart();
+      case "stripTrailing": return text.trimEnd();
+      case "toCharArray": return this.createArray("char[]", text.split(""));
+      case "split": {
+        let pattern;
+        try {
+          pattern = new RegExp(String(args[0]));
+        } catch (err) {
+          throw new Error(`PatternSyntaxException: ${args[0]}`);
+        }
+        const limit = args.length > 1 ? Number(args[1]) : 0;
+        const parts = limit > 0 ? text.split(pattern, limit) : text.split(pattern);
+        if (!(limit > 0)) {
+          while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+        }
+        return this.createArray("String[]", parts);
+      }
+      case "replace":
+        return this.literalReplace(text, String(args[0] ?? ""), String(args[1] ?? ""));
+      case "replaceAll":
+        try {
+          return text.replace(new RegExp(String(args[0]), "g"), String(args[1] ?? ""));
+        } catch (err) {
+          throw new Error(`PatternSyntaxException: ${args[0]}`);
+        }
+      case "replaceFirst":
+        try {
+          return text.replace(new RegExp(String(args[0])), String(args[1] ?? ""));
+        } catch (err) {
+          throw new Error(`PatternSyntaxException: ${args[0]}`);
+        }
+      case "concat":
+        if (args[0] === null || args[0] === undefined) throw new Error("NullPointerException");
+        return text + String(args[0]);
+      case "compareTo":
+        if (typeof args[0] !== "string") throw new Error("NullPointerException");
+        return this.compareJavaStrings(text, args[0]);
+      case "compareToIgnoreCase":
+        if (typeof args[0] !== "string") throw new Error("NullPointerException");
+        return this.compareJavaStrings(text.toLowerCase(), args[0].toLowerCase());
+      case "repeat": {
+        const count = Number(args[0]);
+        if (!Number.isInteger(count) || count < 0) throw new Error("IllegalArgumentException");
+        return text.repeat(count);
+      }
+      case "matches":
+        try {
+          return new RegExp(`^(?:${args[0]})$`).test(text);
+        } catch (err) {
+          throw new Error(`PatternSyntaxException: ${args[0]}`);
+        }
+      case "toString":
+      case "intern":
+        return text;
+      default:
+        missing();
+    }
+  }
+
+  evalStringBuilderMethod(target, heapObj, name, args) {
+    if (name === "append") {
+      heapObj.text += args[0] === null || args[0] === undefined ? "null" : this.stringifyValue(args[0]);
+      return target;
+    }
+    if (name === "toString") return heapObj.text;
+    if (name === "length") return heapObj.text.length;
+    if (name === "reverse") {
+      heapObj.text = heapObj.text.split("").reverse().join("");
+      return target;
+    }
+    if (name === "charAt") return this.evalStringMethod(heapObj.text, "charAt", args);
+    if (name === "substring") return this.javaSubstring(heapObj.text, args[0], args.length > 1 ? args[1] : heapObj.text.length);
+    if (name === "delete") {
+      const start = Number(args[0]);
+      const end = Number(args[1]);
+      heapObj.text = heapObj.text.slice(0, start) + heapObj.text.slice(end);
+      return target;
+    }
+    if (name === "insert") {
+      const offset = Number(args[0]);
+      const extra = args[1] === null || args[1] === undefined ? "null" : this.stringifyValue(args[1]);
+      heapObj.text = heapObj.text.slice(0, offset) + extra + heapObj.text.slice(offset);
+      return target;
+    }
+    throw new Error(`Cannot find method: StringBuilder.${name}`);
+  }
+
+  randomNextBits(obj, bits) {
+    obj.rngSeed = (obj.rngSeed * JAVA_RANDOM_MULTIPLIER + JAVA_RANDOM_ADDEND) & JAVA_RANDOM_MASK;
+    return Number(obj.rngSeed >> BigInt(48 - bits));
+  }
+
+  randomNextIntBounded(obj, bound) {
+    bound = Math.trunc(Number(bound));
+    if (!(bound > 0)) throw new Error("IllegalArgumentException: bound must be positive");
+    if ((bound & -bound) === bound) {
+      return Number((BigInt(bound) * BigInt(this.randomNextBits(obj, 31))) >> 31n);
+    }
+    let bits;
+    let val;
+    do {
+      bits = this.randomNextBits(obj, 31);
+      val = bits % bound;
+    } while ((((bits - val) + (bound - 1)) | 0) < 0);
+    return val;
+  }
+
+  noteRandom(obj, value) {
+    obj.attrs.calls += 1;
+    obj.attrs.last = value;
+    return value;
+  }
+
+  evalRandomMethod(obj, name, args) {
+    if (name === "setSeed") {
+      const userSeed = Math.trunc(Number(args[0]));
+      obj.rngSeed = javaRandomScramble(userSeed);
+      obj.attrs.seed = userSeed;
+      obj.attrs.calls = 0;
+      obj.attrs.last = null;
+      return null;
+    }
+    if (name === "nextInt") {
+      let value;
+      if (args.length >= 2) {
+        const origin = Math.trunc(Number(args[0]));
+        const bound = Math.trunc(Number(args[1]));
+        const span = bound - origin;
+        if (!(span > 0)) throw new Error("IllegalArgumentException: bound must be greater than origin");
+        value = this.randomNextIntBounded(obj, span) + origin;
+      } else if (args.length === 1) {
+        value = this.randomNextIntBounded(obj, args[0]);
+      } else {
+        value = this.randomNextBits(obj, 32) | 0;
+      }
+      return this.noteRandom(obj, value);
+    }
+    if (name === "nextLong") {
+      const hi = BigInt(this.randomNextBits(obj, 32) | 0);
+      const lo = BigInt(this.randomNextBits(obj, 32) >>> 0);
+      return this.noteRandom(obj, Number((hi << 32n) + lo));
+    }
+    if (name === "nextDouble") {
+      const high = BigInt(this.randomNextBits(obj, 26));
+      const low = BigInt(this.randomNextBits(obj, 27));
+      return this.noteRandom(obj, Number((high << 27n) + low) / Number(1n << 53n));
+    }
+    if (name === "nextFloat") {
+      return this.noteRandom(obj, this.randomNextBits(obj, 24) / 16777216);
+    }
+    if (name === "nextBoolean") {
+      return this.noteRandom(obj, this.randomNextBits(obj, 1) !== 0);
+    }
+    throw new Error(`Cannot find method: Random.${name}`);
+  }
+
+  syncScanner(obj) {
+    obj.attrs.remaining = obj.text.slice(obj.pos);
+    obj.attrs.closed = obj.closed;
+  }
+
+  requireOpenScanner(obj) {
+    if (obj.closed) throw new Error("IllegalStateException: Scanner closed");
+  }
+
+  scannerSkipSpace(obj) {
+    while (obj.pos < obj.text.length && /\s/u.test(obj.text[obj.pos])) obj.pos++;
+  }
+
+  scannerPeekToken(obj) {
+    const saved = obj.pos;
+    this.scannerSkipSpace(obj);
+    if (obj.pos >= obj.text.length) {
+      obj.pos = saved;
+      return null;
+    }
+    let end = obj.pos;
+    while (end < obj.text.length && !/\s/u.test(obj.text[end])) end++;
+    const token = obj.text.slice(obj.pos, end);
+    obj.pos = saved;
+    return token;
+  }
+
+  scannerNextToken(obj) {
+    this.requireOpenScanner(obj);
+    this.scannerSkipSpace(obj);
+    if (obj.pos >= obj.text.length) throw new Error("NoSuchElementException");
+    let end = obj.pos;
+    while (end < obj.text.length && !/\s/u.test(obj.text[end])) end++;
+    const token = obj.text.slice(obj.pos, end);
+    obj.pos = end;
+    this.syncScanner(obj);
+    return token;
+  }
+
+  scannerNextLine(obj) {
+    this.requireOpenScanner(obj);
+    if (obj.pos >= obj.text.length) throw new Error("NoSuchElementException");
+    let end = obj.pos;
+    while (end < obj.text.length && obj.text[end] !== "\n") end++;
+    const line = obj.text.slice(obj.pos, end);
+    obj.pos = end < obj.text.length ? end + 1 : end;
+    this.syncScanner(obj);
+    return line;
+  }
+
+  scannerTokenIsInt(token) {
+    return /^[+-]?\d+$/.test(token);
+  }
+
+  scannerTokenIsDouble(token) {
+    return /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(token) || /^(?:[+-]?Infinity|NaN)$/.test(token);
+  }
+
+  scannerTokenIsBoolean(token) {
+    return /^true$/i.test(token) || /^false$/i.test(token);
+  }
+
+  evalScannerMethod(obj, name, args) {
+    if (name === "close") {
+      obj.closed = true;
+      this.syncScanner(obj);
+      return null;
+    }
+    if (name === "hasNext") {
+      this.requireOpenScanner(obj);
+      return this.scannerPeekToken(obj) !== null;
+    }
+    if (name === "hasNextLine") {
+      this.requireOpenScanner(obj);
+      return obj.pos < obj.text.length;
+    }
+    if (name === "hasNextInt") {
+      this.requireOpenScanner(obj);
+      const token = this.scannerPeekToken(obj);
+      return token !== null && this.scannerTokenIsInt(token);
+    }
+    if (name === "hasNextDouble" || name === "hasNextFloat") {
+      this.requireOpenScanner(obj);
+      const token = this.scannerPeekToken(obj);
+      return token !== null && this.scannerTokenIsDouble(token);
+    }
+    if (name === "hasNextBoolean") {
+      this.requireOpenScanner(obj);
+      const token = this.scannerPeekToken(obj);
+      return token !== null && this.scannerTokenIsBoolean(token);
+    }
+    if (name === "next") return this.scannerNextToken(obj);
+    if (name === "nextLine") return this.scannerNextLine(obj);
+    if (name === "nextInt") {
+      const token = this.scannerNextToken(obj);
+      if (!this.scannerTokenIsInt(token)) throw new Error(`InputMismatchException: '${token}'`);
+      return parseInt(token, 10);
+    }
+    if (name === "nextLong") {
+      const token = this.scannerNextToken(obj);
+      if (!this.scannerTokenIsInt(token)) throw new Error(`InputMismatchException: '${token}'`);
+      return Number(token);
+    }
+    if (name === "nextDouble" || name === "nextFloat") {
+      const token = this.scannerNextToken(obj);
+      if (!this.scannerTokenIsDouble(token)) throw new Error(`InputMismatchException: '${token}'`);
+      return Number(token);
+    }
+    if (name === "nextBoolean") {
+      const token = this.scannerNextToken(obj);
+      if (!this.scannerTokenIsBoolean(token)) throw new Error(`InputMismatchException: '${token}'`);
+      return /^true$/i.test(token);
+    }
+    throw new Error(`Cannot find method: Scanner.${name}`);
   }
 
   applyBinaryOperator(op, left, right) {
@@ -1956,6 +2704,35 @@ class JavaInterpreter {
   createStringBuilder(initial = "") {
     const id = this.allocateId();
     this.heap[id] = { id, type: "StringBuilder", text: String(initial) };
+    return { __ref: id };
+  }
+
+  createRandom(seed, hasSeed) {
+    const id = this.allocateId();
+    const userSeed = hasSeed
+      ? Math.trunc(Number(seed))
+      : (Math.floor(Math.random() * 0x100000000) >>> 0);
+    this.heap[id] = {
+      id,
+      type: "Random",
+      rngSeed: javaRandomScramble(userSeed),
+      attrs: { seed: userSeed, calls: 0, last: null }
+    };
+    return { __ref: id };
+  }
+
+  createScanner(source) {
+    const id = this.allocateId();
+    const obj = {
+      id,
+      type: "Scanner",
+      text: String(source ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n"),
+      pos: 0,
+      closed: false,
+      attrs: {}
+    };
+    this.syncScanner(obj);
+    this.heap[id] = obj;
     return { __ref: id };
   }
 }
@@ -2373,6 +3150,7 @@ function createTab(initialCode = null) {
     title: `Tab ${num}`,
     code: initialCode !== null ? initialCode : "",
     consoleOutput: "Run or Visualize to see output...",
+    stdin: "",
     tutorActive: false,
     tutorSteps: [],
     tutorStepIndex: 0,
@@ -2391,6 +3169,7 @@ function switchTab(targetTabId) {
       currentTab.code = notesText.value;
       currentTab.consoleOutput = scratchConsole.textContent;
     }
+    if (stdinText) currentTab.stdin = stdinText.value;
   }
 
   activeTabId = targetTabId;
@@ -2447,6 +3226,7 @@ function renderTabsUI() {
 
 function syncTabToUI(tab) {
   consoleHeading.textContent = `Console — ${tab.title}`;
+  if (stdinText) stdinText.value = tab.stdin || "";
   applyTutorView(tab);
 
   if (tab.tutorActive) {
@@ -2582,11 +3362,11 @@ function showTutorStep(index) {
 // Run & Visualize Execution
 // ---------------------------------------------------------------------------
 
-function executeJavaCode(source) {
+function executeJavaCode(source, stdin = "") {
   const tokens = tokenizeJava(source);
   const parser = new JavaParser(tokens);
   const ast = parser.parseProgram();
-  const interpreter = new JavaInterpreter(ast);
+  const interpreter = new JavaInterpreter(ast, stdin);
   return interpreter.run();
 }
 
@@ -2600,7 +3380,8 @@ function runScratchCode() {
 
   try {
     exitTutorMode(false);
-    const result = executeJavaCode(tab.code);
+    tab.stdin = stdinText ? stdinText.value : (tab.stdin || "");
+    const result = executeJavaCode(tab.code, tab.stdin);
     const lastStep = result.steps[result.steps.length - 1];
     let outputText = "";
 
@@ -2633,7 +3414,8 @@ function visualizeScratchCode() {
   runButton.disabled = true;
 
   try {
-    const data = executeJavaCode(tab.code);
+    tab.stdin = stdinText ? stdinText.value : (tab.stdin || "");
+    const data = executeJavaCode(tab.code, tab.stdin);
     tab.tutorSteps = data.steps || [];
     if (!tab.tutorSteps.length) {
       throw new Error("No execution steps were produced.");
@@ -2686,7 +3468,9 @@ if (isBrowser) {
     }
     tab.code = tab.number === 1 ? INITIAL_CODE_TAB_1 : "";
     tab.consoleOutput = "Run or Visualize to see output...";
+    tab.stdin = "";
     notesText.value = tab.code;
+    if (stdinText) stdinText.value = "";
     updateSyntaxHighlight();
     scratchConsole.textContent = tab.consoleOutput;
     notesText.focus();
@@ -2701,6 +3485,13 @@ if (isBrowser) {
   });
 
   notesText.addEventListener("scroll", syncEditorScroll);
+
+  if (stdinText) {
+    stdinText.addEventListener("input", () => {
+      const tab = getActiveTab();
+      if (tab) tab.stdin = stdinText.value;
+    });
+  }
 
   notesText.addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
@@ -2769,6 +3560,7 @@ if (typeof module !== "undefined" && module.exports) {
     JavaParser,
     JavaInterpreter,
     executeJavaCode,
+    highlightJava,
     buildHeapLabels
   };
 }

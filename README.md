@@ -8,9 +8,10 @@ A browser-based, interactive Java execution and memory visualizer clone of Pytho
 
 - **Real-Time Client-Side Java Execution**:
   - Full Java syntax support: classes, constructors, methods (`public static void main(String[] args)` or helper methods), instance methods, recursion, and loose top-level statements.
-  - Rich control flow: standard 3-part `for` loops, enhanced for-each loops (`for (Type x : iterable)`), `while`, `do-while`, `if`/`else`, `break`, `continue`, and `return`.
+  - Rich control flow: standard 3-part `for` loops, enhanced for-each loops (`for (Type x : iterable)`), `while`, `do-while`, `if`/`else`, classic and arrow `switch` (`case` / `default`, fall-through, `break`, and `yield`), `break`, `continue`, and `return`.
   - Data structures & collections: 1D and 2D primitive/reference arrays (`int[]`, `String[]`), `ArrayList<E>`, `HashMap<K, V>`, `HashSet<E>`, `ArrayDeque<E>`, and `StringBuilder`.
-  - Built-in utilities: `System.out.println` / `print`, `Math.max` / `min` / `abs` / `pow` / `sqrt`, `Arrays.toString` / `sort` / `fill`, and `String` methods (`length`, `charAt`, `substring`, `indexOf`, `split`, etc.).
+  - Built-in utilities: `System.out.println` / `print` / `printf`, `Math` (`max`, `min`, `abs`, `pow`, `sqrt`, `random`), `Arrays.toString` / `sort` / `fill`, `String` (including `length`, `charAt`, `substring`, `equals`, `split`, `replace`, `format`, and `join`), `Integer` / `Long` / `Double` / `Boolean` / `Character`, `java.util.Random` (same sequence as Java for a given seed), and `Scanner` over a `String` or `System.in`.
+  - **Program input** box: text typed there is what `Scanner(System.in)` and `System.in` read. `new Scanner("...")` reads that string instead.
 - **Multi-Tab File Manager**:
   - Starts with `Tab 1`.
   - Click the **`+`** button to open additional tabs (`Tab 2`, `Tab 3`, etc.).
@@ -176,6 +177,39 @@ public class Main {
         Solution sol = new Solution();
         int unable = sol.countStudents(students, sandwiches);
         System.out.println("Students unable to eat: " + unable);
+    }
+}
+```
+
+### 5. Switch, Scanner, and Random
+
+Put this in **Program input** before running:
+
+```text
+2
+Ada
+```
+
+```java
+import java.util.Scanner;
+import java.util.Random;
+
+public class Main {
+    public static void main(String[] args) {
+        Scanner in = new Scanner(System.in);
+        int n = in.nextInt();
+        String name = in.next();
+
+        String label = switch (n) {
+            case 1 -> "one";
+            case 2, 3 -> "a few";
+            default -> "many";
+        };
+
+        Random rand = new Random(42);
+        int roll = rand.nextInt(6) + 1;
+        System.out.printf("%s rolled %d (%s)%n", name, roll, label);
+        System.out.println(name.toUpperCase());
     }
 }
 ```

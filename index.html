@@ -119,13 +119,23 @@
                   <span class="tip-icon">🧠</span>
                   <div>
                     <strong>Visual Memory Model</strong>
-                    <p>Inspect local variables in stack frames and see arrays, ArrayLists, HashMaps, and class instances on the heap.</p>
+                    <p>Inspect local variables in stack frames and see arrays, collections, Scanner, Random, and class instances on the heap.</p>
                   </div>
                 </div>
               </div>
             </div>
 
             <div class="concept-console">
+              <div class="stdin-box">
+                <label for="stdinText">Program input <span>read by Scanner(System.in)</span></label>
+                <textarea
+                  id="stdinText"
+                  spellcheck="false"
+                  autocapitalize="off"
+                  autocomplete="off"
+                  placeholder="Type the lines your program reads, one token or line at a time."
+                ></textarea>
+              </div>
               <div class="console-header">
                 <h2 id="consoleHeading">Console</h2>
                 <button id="clearScratchConsole" class="small-button" type="button">Clear</button>
